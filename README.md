@@ -1,4 +1,4 @@
-# CHAOS - Chain-based Algebraic Optimal Solver
+# CHAOS - Chain-based Antenna-gain Optimization Solver
 
 **Multi-reference weighted Jones calibration for radio interferometry**
 
