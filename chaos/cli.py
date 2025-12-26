@@ -14,23 +14,27 @@ def main():
         description='CHAOS - Chain-based Algebraic Optimal Solver',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-CHAOS performs multi-reference weighted Jones calibration:
-1. Solves from every antenna as reference
-2. Aligns phases to user-specified reference
-3. Weighted average using geometric mean of chain quality
+Algorithm Modes:
+  --single_ao    Single reference only (original CATCAL-style)
+                 Solve once from ref-ant, no weighted averaging
+  
+  (default)     Multi-reference weighted averaging
+                 Solve from ALL antennas, align phases, weighted combine
+
+Calibration Modes:
+  phase_only    J_ref = I (identity), phases only
+  diagonal      J_ref = diag(g_X, g_Y), real amplitudes optimized
+  full          J_ref = 2x2 complex (8 real parameters)
+
+Solver Methods:
+  single_chain  Direct algebraic chaining (1 baseline per antenna)
+  ratio_chain   Ratio method (2 baselines per antenna, pivot cancels)
 
 Examples:
-  # Basic usage
   chaos mydata.ms
-
-  # Specify reference antenna and mode
   chaos mydata.ms --ref-ant 5 --mode diagonal
-
-  # Use ratio chain solver
-  chaos mydata.ms --solver ratio_chain
-
-  # Full Jones calibration
-  chaos mydata.ms --mode full
+  chaos mydata.ms --single_ao --ref-ant 0
+  chaos mydata.ms --solver ratio_chain --mode full
 
 Requires MODEL_DATA column (use CASA tclean with savemodel='modelcolumn').
         """
@@ -38,13 +42,15 @@ Requires MODEL_DATA column (use CASA tclean with savemodel='modelcolumn').
 
     parser.add_argument('ms', help='Measurement Set path')
     parser.add_argument('--ref-ant', '-r', type=int, default=0,
-                       help='Reference antenna for final alignment (default: 0)')
+                       help='Reference antenna (default: 0)')
     parser.add_argument('--mode', '-m', default='diagonal',
                        choices=['phase_only', 'diagonal', 'full'],
                        help='Calibration mode (default: diagonal)')
     parser.add_argument('--solver', '-s', default='single_chain',
                        choices=['single_chain', 'ratio_chain'],
                        help='Solver method (default: single_chain)')
+    parser.add_argument('--single_ao', action='store_true',
+                       help='Single reference only (no multi-ref weighted averaging)')
     parser.add_argument('--field', type=int, default=0,
                        help='Field ID (default: 0)')
     parser.add_argument('--spw', type=int, default=0,
@@ -73,6 +79,7 @@ Requires MODEL_DATA column (use CASA tclean with savemodel='modelcolumn').
             ref_antenna=args.ref_ant,
             mode=args.mode,
             solver=args.solver,
+            single_ao=args.single_ao,
             field_id=args.field,
             spw=args.spw,
             model_column=args.model_column,
@@ -84,6 +91,7 @@ Requires MODEL_DATA column (use CASA tclean with savemodel='modelcolumn').
 
         print(f"\nFinal Jones shape: {jones.shape}")
         print(f"Reference antenna: {args.ref_ant}")
+        print(f"Mode: {'single_ao' if args.single_ao else 'multi-ref weighted'}")
         print(f"Bad antennas: {sorted(diagnostics['bad_antennas'])}")
 
         sys.exit(0)

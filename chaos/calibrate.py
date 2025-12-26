@@ -104,6 +104,7 @@ def calibrate_ms(
     ref_antenna=0,
     mode='diagonal',
     solver='single_chain',
+    single_ao=False,
     field_id=0,
     spw=0,
     model_column='MODEL_DATA',
@@ -125,6 +126,8 @@ def calibrate_ms(
         'phase_only', 'diagonal', or 'full'
     solver : str
         'single_chain' or 'ratio_chain'
+    single_ao : bool
+        If True, solve from single reference only (no multi-ref averaging)
     field_id : int
     spw : int
     model_column : str
@@ -140,7 +143,10 @@ def calibrate_ms(
     """
     print("="*70)
     print("CHAOS - Chain-based Algebraic Optimal Solver")
-    print("Multi-reference weighted Jones calibration")
+    if single_ao:
+        print("Mode: SINGLE REFERENCE (single_ao)")
+    else:
+        print("Mode: MULTI-REFERENCE WEIGHTED AVERAGING")
     print("="*70)
 
     # Load data
@@ -171,12 +177,63 @@ def calibrate_ms(
     print(f"\n[CHAOS] Computing baseline quality matrix...")
     quality_matrix = compute_quality_matrix(vis_obs, flags_combined, antenna1, antenna2, n_ant)
 
-    # Multi-reference solving
-    jones_final, diagnostics = multi_ref_solve_and_combine(
-        vis_obs, vis_model, antenna1, antenna2,
-        quality_matrix, bad_antennas, ref_antenna,
-        mode, solver, max_iter
-    )
+    # Import solvers and chain builder
+    from .chain_builder import build_chain
+    from .single_chain_solver import SingleChainSolver
+    from .ratio_chain_solver import RatioChainSolver
+
+    if single_ao:
+        # ============================================================
+        # SINGLE REFERENCE MODE (single_ao)
+        # ============================================================
+        print(f"\n[CHAOS] Single reference mode: solving from ref_ant={ref_antenna} only")
+        
+        # Build chain from reference
+        chain_path, chain_quality = build_chain(ref_antenna, quality_matrix, bad_antennas)
+        
+        print(f"[CHAOS] Chain path: {len(chain_path)} baselines")
+        for (a_known, a_unknown) in chain_path[:10]:  # Show first 10
+            q = quality_matrix[a_known, a_unknown]
+            print(f"[CHAOS]   {a_known} -> {a_unknown}, quality={q:.4f}")
+        if len(chain_path) > 10:
+            print(f"[CHAOS]   ... and {len(chain_path) - 10} more")
+        
+        # Solve
+        if solver == 'single_chain':
+            slv = SingleChainSolver(ref_antenna=ref_antenna, mode=mode)
+            jones_final, info = slv.solve(
+                vis_obs, vis_model, antenna1, antenna2,
+                chain_path, max_iter=max_iter
+            )
+        else:  # ratio_chain
+            slv = RatioChainSolver(ref_antenna=ref_antenna, mode=mode)
+            jones_final, info = slv.solve(
+                vis_obs, vis_model, antenna1, antenna2,
+                quality_matrix, max_iter=max_iter
+            )
+        
+        print(f"[CHAOS] J_ref: {info['J_ref']}")
+        
+        diagnostics = {
+            'single_ao': True,
+            'ref_antenna': ref_antenna,
+            'chain_path': chain_path,
+            'chain_quality': chain_quality,
+            'solver_info': info,
+            'mode': mode,
+            'solver': solver
+        }
+    
+    else:
+        # ============================================================
+        # MULTI-REFERENCE WEIGHTED MODE (default)
+        # ============================================================
+        jones_final, diagnostics = multi_ref_solve_and_combine(
+            vis_obs, vis_model, antenna1, antenna2,
+            quality_matrix, bad_antennas, ref_antenna,
+            mode, solver, max_iter
+        )
+        diagnostics['single_ao'] = False
 
     # Compute final residuals
     print(f"\n[CHAOS] Computing residuals...")
@@ -195,18 +252,25 @@ def calibrate_ms(
 
     # Diagnostics
     output_diag = f"{output_prefix}_diagnostics.npz"
-    np.savez(
-        output_diag,
-        jones=jones_final,
-        ref_antenna=ref_antenna,
-        mode=mode,
-        solver=solver,
-        bad_antennas=np.array(list(bad_antennas)),
-        quality_matrix=quality_matrix,
-        weights=diagnostics['weights'],
-        residual_rms=res_stats['rms'],
-        n_ant=n_ant
-    )
+    
+    save_dict = {
+        'jones': jones_final,
+        'ref_antenna': ref_antenna,
+        'mode': mode,
+        'solver': solver,
+        'single_ao': single_ao,
+        'bad_antennas': np.array(list(bad_antennas)),
+        'quality_matrix': quality_matrix,
+        'residual_rms': res_stats['rms'],
+        'residual_XX_rms': res_stats['XX_rms'],
+        'residual_YY_rms': res_stats['YY_rms'],
+        'n_ant': n_ant
+    }
+    
+    if not single_ao and 'weights' in diagnostics:
+        save_dict['weights'] = diagnostics['weights']
+    
+    np.savez(output_diag, **save_dict)
     print(f"[CHAOS]   Diagnostics: {output_diag}")
 
     print(f"\n{'='*70}")
