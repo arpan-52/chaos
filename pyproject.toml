@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chaos-cal"
+version = "0.1.0"
+description = "CHAOS: Chain-based Algebraic Optimal Solver for radio interferometric calibration"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Arpan Pal"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0",
+    "python-casacore>=3.5.0",
+]
+
+[project.optional-dependencies]
+gpu = ["cupy>=10.0.0"]
+plot = ["matplotlib>=3.5.0"]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+chaos = "chaos.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/arpan-52/chaos"
+
+[tool.setuptools.packages.find]
+where = ["."]
