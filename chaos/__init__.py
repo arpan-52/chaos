@@ -23,5 +23,6 @@ __author__ = "Arpan Pal"
 __algorithm__ = "CHAOS - Chain-based Algebraic Optimal Solver"
 
 from .calibrate import calibrate_ms
+from .applycal import applycal
 
-__all__ = ['calibrate_ms']
+__all__ = ['calibrate_ms', 'applycal']
