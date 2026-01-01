@@ -105,6 +105,7 @@ def calibrate_ms(
     mode='diagonal',
     solver='single_chain',
     single_ao=False,
+    polish=False,
     field_id=0,
     spw=0,
     model_column='MODEL_DATA',
@@ -128,6 +129,8 @@ def calibrate_ms(
         'single_chain' or 'ratio_chain'
     single_ao : bool
         If True, solve from single reference only (no multi-ref averaging)
+    polish : bool
+        If True, refine solution using least squares
     field_id : int
     spw : int
     model_column : str
@@ -234,6 +237,17 @@ def calibrate_ms(
             mode, solver, max_iter
         )
         diagnostics['single_ao'] = False
+
+    # ============================================================
+    # POLISH (optional least squares refinement)
+    # ============================================================
+    if polish:
+        from .polish import polish_jones
+        jones_final, polish_info = polish_jones(
+            jones_final, vis_obs, vis_model, antenna1, antenna2,
+            ref_antenna, mode=mode, max_iter=max_iter
+        )
+        diagnostics['polish'] = polish_info
 
     # Compute final residuals
     print(f"\n[CHAOS] Computing residuals...")

@@ -57,6 +57,8 @@ Solver Methods:
                        help='Solver method (default: single_chain)')
     solve_parser.add_argument('--single_ao', action='store_true',
                        help='Single reference only (no multi-ref weighted averaging)')
+    solve_parser.add_argument('--polish', action='store_true',
+                       help='Refine solution using least squares')
     solve_parser.add_argument('--field', type=int, default=0,
                        help='Field ID (default: 0)')
     solve_parser.add_argument('--spw', type=int, default=0,
@@ -125,6 +127,7 @@ def run_solve(args):
             mode=args.mode,
             solver=args.solver,
             single_ao=args.single_ao,
+            polish=args.polish,
             field_id=args.field,
             spw=args.spw,
             model_column=args.model_column,
@@ -137,6 +140,8 @@ def run_solve(args):
         print(f"\nFinal Jones shape: {jones.shape}")
         print(f"Reference antenna: {args.ref_ant}")
         print(f"Mode: {'single_ao' if args.single_ao else 'multi-ref weighted'}")
+        if args.polish:
+            print(f"Polish: enabled")
         print(f"Bad antennas: {sorted(diagnostics['bad_antennas'])}")
 
         sys.exit(0)
