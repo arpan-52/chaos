@@ -1,36 +1,22 @@
 """
-CHAOS Calibration Pipeline.
+CHAOS Legacy Calibration Pipeline.
 
-Main entry point for Jones calibration.
+Direct MS calibration without config file.
+For backwards compatibility with simple use cases.
 """
 
 import numpy as np
 from .ms_loader import MSLoader
-from .quality import compute_quality_matrix, compute_baseline_quality
+from .quality import compute_quality_matrix
 from .weighted_combiner import multi_ref_solve_and_combine
 from .utils import compute_residuals
 
 
 def detect_bad_antennas(vis_obs, antenna1, antenna2, flags, threshold=0.05):
-    """
-    Detect bad antennas using amplitude-based method.
-
-    Parameters
-    ----------
-    vis_obs : ndarray (n_bl, 2, 2)
-    antenna1, antenna2 : ndarray (n_bl,)
-    flags : ndarray (n_bl, 2, 2)
-    threshold : float
-        Fraction of reference amplitude below which antenna is flagged
-
-    Returns
-    -------
-    bad_antennas : set
-    """
+    """Detect bad antennas using amplitude-based method."""
     n_ant = max(antenna1.max(), antenna2.max()) + 1
     antenna_amps = {i: [] for i in range(n_ant)}
 
-    # Collect amplitudes per antenna
     for idx, (a1, a2) in enumerate(zip(antenna1, antenna2)):
         if flags[idx].any():
             continue
@@ -38,7 +24,6 @@ def detect_bad_antennas(vis_obs, antenna1, antenna2, flags, threshold=0.05):
         antenna_amps[a1].append(amp)
         antenna_amps[a2].append(amp)
 
-    # Compute mean per antenna
     antenna_means = {}
     for ant, amps in antenna_amps.items():
         if len(amps) > 0:
@@ -46,7 +31,6 @@ def detect_bad_antennas(vis_obs, antenna1, antenna2, flags, threshold=0.05):
         else:
             antenna_means[ant] = 0.0
 
-    # Reference: 75th percentile
     all_means = [v for v in antenna_means.values() if v > 0]
     if len(all_means) == 0:
         return set()
@@ -54,7 +38,6 @@ def detect_bad_antennas(vis_obs, antenna1, antenna2, flags, threshold=0.05):
     ref_amp = np.percentile(all_means, 75)
     cutoff = threshold * ref_amp
 
-    # Find bad antennas
     bad_antennas = set()
     for ant, mean_amp in antenna_means.items():
         if mean_amp < cutoff and mean_amp > 0:
@@ -65,18 +48,7 @@ def detect_bad_antennas(vis_obs, antenna1, antenna2, flags, threshold=0.05):
 
 
 def flag_rfi_median(vis_obs, sigma=5.0):
-    """
-    Simple median-based RFI flagging.
-
-    Parameters
-    ----------
-    vis_obs : ndarray (n_bl, 2, 2)
-    sigma : float
-
-    Returns
-    -------
-    flags : ndarray (n_bl, 2, 2) bool
-    """
+    """Simple median-based RFI flagging."""
     n_bl = vis_obs.shape[0]
     flags = np.zeros((n_bl, 2, 2), dtype=bool)
 
@@ -106,6 +78,7 @@ def calibrate_ms(
     solver='single_chain',
     single_ao=False,
     polish=False,
+    polish_tol=1e-10,
     field_id=0,
     spw=0,
     model_column='MODEL_DATA',
@@ -128,9 +101,11 @@ def calibrate_ms(
     solver : str
         'single_chain' or 'ratio_chain'
     single_ao : bool
-        If True, solve from single reference only (no multi-ref averaging)
+        If True, solve from single reference only
     polish : bool
         If True, refine solution using least squares
+    polish_tol : float
+        Tolerance for polish convergence
     field_id : int
     spw : int
     model_column : str
@@ -186,29 +161,25 @@ def calibrate_ms(
     from .ratio_chain_solver import RatioChainSolver
 
     if single_ao:
-        # ============================================================
-        # SINGLE REFERENCE MODE (single_ao)
-        # ============================================================
+        # SINGLE REFERENCE MODE
         print(f"\n[CHAOS] Single reference mode: solving from ref_ant={ref_antenna} only")
         
-        # Build chain from reference
         chain_path, chain_quality = build_chain(ref_antenna, quality_matrix, bad_antennas)
         
         print(f"[CHAOS] Chain path: {len(chain_path)} baselines")
-        for (a_known, a_unknown) in chain_path[:10]:  # Show first 10
+        for (a_known, a_unknown) in chain_path[:10]:
             q = quality_matrix[a_known, a_unknown]
             print(f"[CHAOS]   {a_known} -> {a_unknown}, quality={q:.4f}")
         if len(chain_path) > 10:
             print(f"[CHAOS]   ... and {len(chain_path) - 10} more")
         
-        # Solve
         if solver == 'single_chain':
             slv = SingleChainSolver(ref_antenna=ref_antenna, mode=mode)
             jones_final, info = slv.solve(
                 vis_obs, vis_model, antenna1, antenna2,
                 chain_path, max_iter=max_iter
             )
-        else:  # ratio_chain
+        else:
             slv = RatioChainSolver(ref_antenna=ref_antenna, mode=mode)
             jones_final, info = slv.solve(
                 vis_obs, vis_model, antenna1, antenna2,
@@ -228,9 +199,7 @@ def calibrate_ms(
         }
     
     else:
-        # ============================================================
-        # MULTI-REFERENCE WEIGHTED MODE (default)
-        # ============================================================
+        # MULTI-REFERENCE WEIGHTED MODE
         jones_final, diagnostics = multi_ref_solve_and_combine(
             vis_obs, vis_model, antenna1, antenna2,
             quality_matrix, bad_antennas, ref_antenna,
@@ -238,14 +207,12 @@ def calibrate_ms(
         )
         diagnostics['single_ao'] = False
 
-    # ============================================================
-    # POLISH (optional least squares refinement)
-    # ============================================================
+    # POLISH
     if polish:
         from .polish import polish_jones
         jones_final, polish_info = polish_jones(
             jones_final, vis_obs, vis_model, antenna1, antenna2,
-            ref_antenna, mode=mode, max_iter=max_iter
+            ref_antenna, mode=mode, max_iter=max_iter, tol=polish_tol
         )
         diagnostics['polish'] = polish_info
 
@@ -259,12 +226,10 @@ def calibrate_ms(
     # Save results
     print(f"\n[CHAOS] Saving results...")
 
-    # Main Jones file
     output_jones = f"{output_prefix}.npy"
     np.save(output_jones, jones_final)
     print(f"[CHAOS]   Jones: {output_jones} {jones_final.shape}")
 
-    # Diagnostics
     output_diag = f"{output_prefix}_diagnostics.npz"
     
     save_dict = {
@@ -291,7 +256,6 @@ def calibrate_ms(
     print("CALIBRATION COMPLETE")
     print(f"{'='*70}")
 
-    # Add to diagnostics
     diagnostics['residuals'] = res_stats
     diagnostics['bad_antennas'] = bad_antennas
     diagnostics['quality_matrix'] = quality_matrix

@@ -1,33 +1,62 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "chaos-cal"
-version = "0.1.0"
-description = "CHAOS: Chain-based Algebraic Optimal Solver for radio interferometric calibration"
+version = "0.2.0"
+description = "CHAOS - Chain-based Algebraic Optimal Solver for Radio Interferometry Calibration"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Arpan Pal"}
+    {name = "Arpan Pal", email = "arpan@example.com"}
+]
+keywords = [
+    "radio astronomy",
+    "interferometry", 
+    "calibration",
+    "Jones matrices",
+    "RIME"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Astronomy",
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "numpy>=1.20.0",
-    "scipy>=1.7.0",
-    "python-casacore>=3.5.0",
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "python-casacore>=3.4",
+    "h5py>=3.0",
+    "pyyaml>=5.0",
 ]
 
 [project.optional-dependencies]
-gpu = ["cupy>=10.0.0"]
-plot = ["matplotlib>=3.5.0"]
-dev = ["pytest>=7.0.0"]
+gpu = ["cupy>=10.0"]
+dev = ["pytest", "pytest-cov", "black", "flake8"]
 
 [project.scripts]
 chaos = "chaos.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/arpan-52/chaos"
+Homepage = "https://github.com/arpanpal/chaos"
+Documentation = "https://github.com/arpanpal/chaos#readme"
+Repository = "https://github.com/arpanpal/chaos"
 
 [tool.setuptools.packages.find]
-where = ["."]
+include = ["chaos*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

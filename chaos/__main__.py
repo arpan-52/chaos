@@ -1,7 +1,7 @@
 """
 CHAOS module entry point.
 
-Allows running as: python -m chaos mydata.ms [options]
+Allows running as: python -m chaos [args]
 """
 
 from .cli import main
