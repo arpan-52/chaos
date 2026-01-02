@@ -1,10 +1,6 @@
-"""
-CHAOS module entry point.
+"""Entry point for python -m chaos"""
 
-Allows running as: python -m chaos [args]
-"""
-
-from .cli import main
+from chaos.cli.main import main
 
 if __name__ == "__main__":
     main()

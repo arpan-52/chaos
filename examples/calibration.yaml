@@ -1,0 +1,40 @@
+# CHAOS Calibration Configuration Example
+#
+# This file demonstrates the pipe-delimited table format for
+# specifying calibration workflows.
+
+# Info section: Map MS files to their fields
+info: |
+  MS file        | Fields
+  -------------- | ----------------------
+  flux_cal.ms    | 3C147,3C286
+  phase_cal.ms   | J1234+567
+  target.ms      | MyTarget
+
+# Solve section: Specify what to solve for
+#
+# Jones types: K (delay), B (bandpass), G (gain), G[p] (phase-only), D (leakage)
+# Fields: Which calibrators to use (comma-separated, or : for interpolate between)
+# Freq int: 'full', 'per_channel', 'per_spw', or specific bandwidth like '4MHz'
+# Time int: 'inf' (all), '30s', '1m', 'int' (per integration), 'scan' (per scan)
+# Pre-apply: Jones types to correct before solving
+# Parang: Correct for parallactic angle (true/false)
+
+solve_jones: |
+  Jones | Fields    | Scans | Spw | Freq int    | Time int | Pre-apply | Pre-tables  | Output      | Model col  | Parang
+  ----- | --------- | ----- | --- | ----------- | -------- | --------- | ----------- | ----------- | ---------- | ------
+  K     | 3C147     | *     | *   | full        | inf      |           |             | flux_cal.h5 | MODEL_DATA | false
+  B     | 3C147     | *     | *   | per_channel | inf      | K         | flux_cal.h5 | flux_cal.h5 | MODEL_DATA | false
+  G     | 3C147     | *     | *   | full        | inf      | K,B       | flux_cal.h5 | flux_cal.h5 | MODEL_DATA | false
+  G[p]  | J1234+567 | *     | *   | full        | 30s      | K,B,G     | flux_cal.h5 | phase_cal.h5| MODEL_DATA | true
+
+# Apply section: Apply solutions to data
+#
+# Interpolation: 'nearest', 'linear', 'cubic'
+# Output col: Column to write corrected data
+
+apply_jones: |
+  MS file   | Jones   | From fields | Scans | Spw | Freq interp | Time interp | Tables                     | Output col     | Parang
+  --------- | ------- | ----------- | ----- | --- | ----------- | ----------- | -------------------------- | -------------- | ------
+  target.ms | K,B,G   | 3C147       | *     | *   | linear      | linear      | flux_cal.h5                | CORRECTED_DATA | false
+  target.ms | G[p]    | J1234+567   | *     | *   | linear      | nearest     | phase_cal.h5               | CORRECTED_DATA | true

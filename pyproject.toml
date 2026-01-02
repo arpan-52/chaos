@@ -4,50 +4,50 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chaos-cal"
-version = "0.2.0"
+version = "2.0.0"
 description = "CHAOS - Chain-based Algebraic Optimal Solver for Radio Interferometry Calibration"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Arpan Pal", email = "arpan@example.com"}
+    {name = "Arpan Pal"}
 ]
 keywords = [
     "radio astronomy",
     "interferometry", 
     "calibration",
     "Jones matrices",
-    "RIME"
+    "RIME",
+    "CASA"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
-    "numpy>=1.20",
+    "numpy>=1.21",
     "scipy>=1.7",
-    "python-casacore>=3.4",
+    "python-casacore>=3.5",
     "h5py>=3.0",
-    "pyyaml>=5.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-gpu = ["cupy>=10.0"]
-dev = ["pytest", "pytest-cov", "black", "flake8"]
+gpu = ["cupy>=11.0"]
+dev = ["pytest>=7.0", "pytest-cov", "black", "ruff"]
 
 [project.scripts]
-chaos = "chaos.cli:main"
+chaos = "chaos.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/arpanpal/chaos"
-Documentation = "https://github.com/arpanpal/chaos#readme"
 Repository = "https://github.com/arpanpal/chaos"
 
 [tool.setuptools.packages.find]
@@ -55,8 +55,13 @@ include = ["chaos*"]
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py39', 'py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W"]
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["chaos/tests"]
 python_files = ["test_*.py"]
