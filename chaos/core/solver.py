@@ -156,7 +156,6 @@ def solve_jones(
         antenna2=antenna2,
         ref_antenna=ref_antenna,
         mode=mode,
-        jones_type=jones_type,
         max_iter=max_iter,
         tol=polish_tol,
         verbose=verbose,

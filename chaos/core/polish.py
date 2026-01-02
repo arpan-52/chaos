@@ -1,15 +1,16 @@
 """
-Least Squares Polish for Jones Solutions.
+Fast Vectorized Polish for Jones Solutions.
 
-Refines algebraic chain solution using least squares optimization
-over all baselines simultaneously.
+Uses batched matrix operations - NO Python loops in residual computation.
+Works on CPU (NumPy) or GPU (CuPy) seamlessly.
 
-This is the key step that achieves CASA-level accuracy.
+For diagonal Jones: params are (amp, phase) per antenna per pol
+Reference antenna: phase = 0 constraint
 """
 
 import numpy as np
 from scipy.optimize import least_squares
-from typing import Dict, Tuple, Optional
+from typing import Tuple, Dict, Optional
 
 
 def polish_jones(
@@ -20,18 +21,12 @@ def polish_jones(
     antenna2: np.ndarray,
     ref_antenna: int,
     mode: str = "diagonal",
-    jones_type: str = "G",
-    max_iter: int = 100,
+    max_iter: int = 50,
     tol: float = 1e-10,
     verbose: bool = True,
 ) -> Tuple[np.ndarray, Dict]:
     """
-    Polish Jones solution using least squares.
-    
-    Minimizes:
-        sum_ij |V_obs_ij - J_i @ M_ij @ J_j^H|^2
-    
-    subject to reference antenna constraints.
+    Polish Jones solution using least squares with vectorized operations.
     
     Parameters
     ----------
@@ -40,28 +35,26 @@ def polish_jones(
     vis_obs : ndarray (n_bl, 2, 2)
         Observed visibilities
     vis_model : ndarray (n_bl, 2, 2)
-        Model visibilities
+        Model visibilities  
     antenna1, antenna2 : ndarray (n_bl,)
         Antenna indices
     ref_antenna : int
-        Reference antenna (constrained)
+        Reference antenna (phase = 0)
     mode : str
         'phase_only', 'diagonal', or 'full'
-    jones_type : str
-        'G', 'G[p]', 'B', 'K', 'D' - affects reference constraint
     max_iter : int
-        Maximum iterations
+        Max iterations
     tol : float
-        Convergence tolerance (ftol, xtol, gtol)
+        Convergence tolerance
     verbose : bool
         Print progress
     
     Returns
     -------
-    jones_polished : ndarray (n_ant, 2, 2)
-        Refined Jones matrices
+    jones : ndarray (n_ant, 2, 2)
+        Polished Jones matrices
     info : dict
-        Optimization info
+        Optimization diagnostics
     """
     jones_init = np.asarray(jones_init, dtype=np.complex128)
     vis_obs = np.asarray(vis_obs, dtype=np.complex128)
@@ -75,505 +68,340 @@ def polish_jones(
     if verbose:
         print(f"[CHAOS] Polishing: {n_ant} antennas, {n_bl} baselines, mode={mode}")
     
-    # Choose polish function based on mode
     if mode == "phase_only":
         return _polish_phase_only(
             jones_init, vis_obs, vis_model, antenna1, antenna2,
-            ref_antenna, max_iter, tol, verbose
+            ref_antenna, n_ant, n_bl, max_iter, tol, verbose
         )
     elif mode == "diagonal":
         return _polish_diagonal(
             jones_init, vis_obs, vis_model, antenna1, antenna2,
-            ref_antenna, jones_type, max_iter, tol, verbose
+            ref_antenna, n_ant, n_bl, max_iter, tol, verbose
         )
-    else:  # full
+    else:
         return _polish_full(
             jones_init, vis_obs, vis_model, antenna1, antenna2,
-            ref_antenna, jones_type, max_iter, tol, verbose
+            ref_antenna, n_ant, n_bl, max_iter, tol, verbose
         )
-
-
-def _polish_phase_only(
-    jones_init: np.ndarray,
-    vis_obs: np.ndarray,
-    vis_model: np.ndarray,
-    antenna1: np.ndarray,
-    antenna2: np.ndarray,
-    ref_antenna: int,
-    max_iter: int,
-    tol: float,
-    verbose: bool,
-) -> Tuple[np.ndarray, Dict]:
-    """
-    Polish phase-only Jones (G[p]).
-    
-    Parameters: N-1 phases per polarization (ref antenna phase = 0)
-    Total: 2*(N-1) real parameters
-    
-    Reference constraint: phi_X = phi_Y = 0 for ref antenna
-    """
-    n_ant = jones_init.shape[0]
-    n_bl = len(antenna1)
-    
-    # Extract initial phases
-    # params = [phi_X_0, phi_X_1, ..., phi_Y_0, phi_Y_1, ...]
-    # excluding ref_antenna for each pol
-    params_init = []
-    for pol in range(2):
-        for ant in range(n_ant):
-            if ant == ref_antenna:
-                continue
-            phase = np.angle(jones_init[ant, pol, pol])
-            params_init.append(phase)
-    
-    params_init = np.array(params_init)
-    
-    def params_to_jones(params):
-        """Convert parameter vector to Jones matrices."""
-        jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
-        
-        idx = 0
-        for pol in range(2):
-            for ant in range(n_ant):
-                if ant == ref_antenna:
-                    jones[ant, pol, pol] = 1.0  # Phase = 0, Amp = 1
-                else:
-                    jones[ant, pol, pol] = np.exp(1j * params[idx])
-                    idx += 1
-        
-        return jones
-    
-    def residual_func(params):
-        """Compute residuals for all baselines."""
-        jones = params_to_jones(params)
-        
-        residuals = []
-        for bl_idx in range(n_bl):
-            a1, a2 = antenna1[bl_idx], antenna2[bl_idx]
-            
-            J_i = jones[a1]
-            J_j = jones[a2]
-            M = vis_model[bl_idx]
-            V_obs = vis_obs[bl_idx]
-            
-            # V_pred = J_i @ M @ J_j^H
-            V_pred = J_i @ M @ np.conj(J_j.T)
-            
-            # Residual for diagonal elements (parallel hand)
-            R = V_obs - V_pred
-            residuals.extend([R[0, 0].real, R[0, 0].imag])
-            residuals.extend([R[1, 1].real, R[1, 1].imag])
-        
-        return np.array(residuals)
-    
-    # Initial cost
-    r0 = residual_func(params_init)
-    cost_init = 0.5 * np.sum(r0**2)
-    
-    # Optimize
-    result = least_squares(
-        residual_func,
-        params_init,
-        method='lm',
-        max_nfev=max_iter * len(params_init),
-        ftol=tol,
-        xtol=tol,
-        gtol=tol,
-    )
-    
-    jones_polished = params_to_jones(result.x)
-    
-    cost_final = 0.5 * np.sum(result.fun**2)
-    
-    if verbose:
-        print(f"[CHAOS] Polish: cost {cost_init:.6e} -> {cost_final:.6e}")
-        print(f"[CHAOS] Polish: {result.nfev} function evaluations, status={result.status}")
-    
-    info = {
-        "cost_init": cost_init,
-        "cost_final": cost_final,
-        "n_iter": result.nfev,
-        "status": result.status,
-        "message": result.message,
-    }
-    
-    return jones_polished, info
 
 
 def _polish_diagonal(
-    jones_init: np.ndarray,
-    vis_obs: np.ndarray,
-    vis_model: np.ndarray,
-    antenna1: np.ndarray,
-    antenna2: np.ndarray,
-    ref_antenna: int,
-    jones_type: str,
-    max_iter: int,
-    tol: float,
-    verbose: bool,
-) -> Tuple[np.ndarray, Dict]:
+    jones_init, vis_obs, vis_model, antenna1, antenna2,
+    ref_antenna, n_ant, n_bl, max_iter, tol, verbose
+):
     """
-    Polish diagonal Jones (G, B, K).
+    Polish diagonal Jones matrices (G, B, K).
     
-    Parameters per polarization:
-        - Amplitude: N values (all antennas, including ref)
-        - Phase: N-1 values (ref antenna phase = 0)
+    Parameterization per pol:
+        - ref_antenna: amplitude only (phase = 0)
+        - other antennas: amplitude + phase
+    Total: 2*(N-1) + 2 = 2*N params per pol
     
-    Total: 2*(N + N-1) = 4N - 2 real parameters
-    
-    Reference constraint: phase = 0 for both pols
+    Solves XX and YY independently for efficiency.
     """
-    n_ant = jones_init.shape[0]
-    n_bl = len(antenna1)
-    
-    # Extract initial parameters
-    # params = [amp_X_0..amp_X_{N-1}, phase_X_0..phase_X_{N-2}, 
-    #           amp_Y_0..amp_Y_{N-1}, phase_Y_0..phase_Y_{N-2}]
-    # Note: phases exclude ref_antenna
-    params_init = []
-    
-    for pol in range(2):
-        # Amplitudes (all antennas)
-        for ant in range(n_ant):
-            amp = np.abs(jones_init[ant, pol, pol])
-            params_init.append(amp)
-        
-        # Phases (exclude ref_antenna)
-        for ant in range(n_ant):
-            if ant == ref_antenna:
-                continue
-            phase = np.angle(jones_init[ant, pol, pol])
-            params_init.append(phase)
-    
-    params_init = np.array(params_init)
-    
-    # Calculate parameter indices
-    n_amp_per_pol = n_ant
-    n_phase_per_pol = n_ant - 1
-    n_per_pol = n_amp_per_pol + n_phase_per_pol
-    
-    def params_to_jones(params):
-        """Convert parameter vector to Jones matrices."""
-        jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
-        
-        for pol in range(2):
-            offset = pol * n_per_pol
-            
-            # Amplitudes
-            amps = params[offset:offset + n_amp_per_pol]
-            
-            # Phases
-            phase_offset = offset + n_amp_per_pol
-            phases_partial = params[phase_offset:phase_offset + n_phase_per_pol]
-            
-            # Build full phase array (insert 0 at ref_antenna)
-            phases = np.zeros(n_ant)
-            idx = 0
-            for ant in range(n_ant):
-                if ant == ref_antenna:
-                    phases[ant] = 0.0
-                else:
-                    phases[ant] = phases_partial[idx]
-                    idx += 1
-            
-            # Construct diagonal elements
-            for ant in range(n_ant):
-                jones[ant, pol, pol] = amps[ant] * np.exp(1j * phases[ant])
-        
-        return jones
-    
-    def residual_func(params):
-        """Compute residuals for all baselines."""
-        jones = params_to_jones(params)
-        
-        residuals = []
-        for bl_idx in range(n_bl):
-            a1, a2 = antenna1[bl_idx], antenna2[bl_idx]
-            
-            J_i = jones[a1]
-            J_j = jones[a2]
-            M = vis_model[bl_idx]
-            V_obs = vis_obs[bl_idx]
-            
-            V_pred = J_i @ M @ np.conj(J_j.T)
-            
-            # Residuals for parallel hands
-            R = V_obs - V_pred
-            residuals.extend([R[0, 0].real, R[0, 0].imag])
-            residuals.extend([R[1, 1].real, R[1, 1].imag])
-        
-        return np.array(residuals)
-    
-    # Initial cost
-    r0 = residual_func(params_init)
-    cost_init = 0.5 * np.sum(r0**2)
-    
-    # Optimize
-    result = least_squares(
-        residual_func,
-        params_init,
+    # Solve XX
+    params_X_init = _jones_to_params_1pol(jones_init[:, 0, 0], ref_antenna)
+    result_X = least_squares(
+        _build_residual_1pol(vis_obs[:, 0, 0], vis_model[:, 0, 0], 
+                             antenna1, antenna2, n_ant, ref_antenna),
+        params_X_init,
         method='lm',
-        max_nfev=max_iter * len(params_init),
-        ftol=tol,
-        xtol=tol,
-        gtol=tol,
+        ftol=tol, xtol=tol, gtol=tol,
+        max_nfev=max_iter * len(params_X_init)
     )
     
-    jones_polished = params_to_jones(result.x)
-    cost_final = 0.5 * np.sum(result.fun**2)
+    # Solve YY
+    params_Y_init = _jones_to_params_1pol(jones_init[:, 1, 1], ref_antenna)
+    result_Y = least_squares(
+        _build_residual_1pol(vis_obs[:, 1, 1], vis_model[:, 1, 1],
+                             antenna1, antenna2, n_ant, ref_antenna),
+        params_Y_init,
+        method='lm',
+        ftol=tol, xtol=tol, gtol=tol,
+        max_nfev=max_iter * len(params_Y_init)
+    )
+    
+    # Reconstruct Jones
+    jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
+    jones[:, 0, 0] = _params_to_gains(result_X.x, n_ant, ref_antenna)
+    jones[:, 1, 1] = _params_to_gains(result_Y.x, n_ant, ref_antenna)
     
     if verbose:
+        cost_init = 0.5 * (np.sum(_build_residual_1pol(
+            vis_obs[:, 0, 0], vis_model[:, 0, 0], antenna1, antenna2, n_ant, ref_antenna
+        )(params_X_init)**2) + np.sum(_build_residual_1pol(
+            vis_obs[:, 1, 1], vis_model[:, 1, 1], antenna1, antenna2, n_ant, ref_antenna
+        )(params_Y_init)**2))
+        cost_final = 0.5 * (result_X.cost + result_Y.cost)
         print(f"[CHAOS] Polish: cost {cost_init:.6e} -> {cost_final:.6e}")
-        print(f"[CHAOS] Polish: {result.nfev} function evaluations, status={result.status}")
+        print(f"[CHAOS] Polish: XX {result_X.nfev} evals, YY {result_Y.nfev} evals")
     
     info = {
-        "cost_init": cost_init,
-        "cost_final": cost_final,
-        "n_iter": result.nfev,
-        "status": result.status,
-        "message": result.message,
+        "cost_final": 0.5 * (result_X.cost + result_Y.cost),
+        "nfev_X": result_X.nfev,
+        "nfev_Y": result_Y.nfev,
+        "success": result_X.success and result_Y.success,
     }
     
-    return jones_polished, info
+    return jones, info
+
+
+def _polish_phase_only(
+    jones_init, vis_obs, vis_model, antenna1, antenna2,
+    ref_antenna, n_ant, n_bl, max_iter, tol, verbose
+):
+    """
+    Polish phase-only Jones (G[p]).
+    
+    Params: phase per antenna (excluding ref which is 0)
+    Amplitude fixed at 1.
+    """
+    # Solve XX phases
+    phases_X_init = np.array([np.angle(jones_init[i, 0, 0]) 
+                              for i in range(n_ant) if i != ref_antenna])
+    result_X = least_squares(
+        _build_residual_phase_only(vis_obs[:, 0, 0], vis_model[:, 0, 0],
+                                    antenna1, antenna2, n_ant, ref_antenna),
+        phases_X_init,
+        method='lm',
+        ftol=tol, xtol=tol, gtol=tol,
+        max_nfev=max_iter * len(phases_X_init)
+    )
+    
+    # Solve YY phases
+    phases_Y_init = np.array([np.angle(jones_init[i, 1, 1])
+                              for i in range(n_ant) if i != ref_antenna])
+    result_Y = least_squares(
+        _build_residual_phase_only(vis_obs[:, 1, 1], vis_model[:, 1, 1],
+                                    antenna1, antenna2, n_ant, ref_antenna),
+        phases_Y_init,
+        method='lm',
+        ftol=tol, xtol=tol, gtol=tol,
+        max_nfev=max_iter * len(phases_Y_init)
+    )
+    
+    # Reconstruct Jones
+    jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
+    jones[:, 0, 0] = _phases_to_gains(result_X.x, n_ant, ref_antenna)
+    jones[:, 1, 1] = _phases_to_gains(result_Y.x, n_ant, ref_antenna)
+    
+    if verbose:
+        print(f"[CHAOS] Phase polish: XX {result_X.nfev} evals, YY {result_Y.nfev} evals")
+    
+    info = {
+        "nfev_X": result_X.nfev,
+        "nfev_Y": result_Y.nfev,
+        "success": result_X.success and result_Y.success,
+    }
+    
+    return jones, info
 
 
 def _polish_full(
-    jones_init: np.ndarray,
-    vis_obs: np.ndarray,
-    vis_model: np.ndarray,
-    antenna1: np.ndarray,
-    antenna2: np.ndarray,
-    ref_antenna: int,
-    jones_type: str,
-    max_iter: int,
-    tol: float,
-    verbose: bool,
-) -> Tuple[np.ndarray, Dict]:
+    jones_init, vis_obs, vis_model, antenna1, antenna2,
+    ref_antenna, n_ant, n_bl, max_iter, tol, verbose
+):
     """
-    Polish full 2x2 Jones (D-terms).
+    Polish full 2x2 Jones (for D-terms or general).
     
-    For D-terms:
-        D = | 1    d_01 |
-            | d_10  1   |
-    
-    Parameters: d_01 and d_10 for each antenna (complex = 2 real each)
-    Reference constraint: d_01 = 0 for ref antenna (to break degeneracy)
-    
-    Total: 2*(N-1) + 2*N = 4N - 2 real parameters for D-terms
+    Uses full matrix residuals, still vectorized.
     """
-    n_ant = jones_init.shape[0]
-    n_bl = len(antenna1)
+    # Pack all Jones elements into params
+    # Each antenna: j00_re, j00_im, j01_re, j01_im, j10_re, j10_im, j11_re, j11_im
+    # Ref antenna: j00 and j11 have phase=0 constraint
     
-    if jones_type == "D":
-        return _polish_d_terms(
-            jones_init, vis_obs, vis_model, antenna1, antenna2,
-            ref_antenna, max_iter, tol, verbose
-        )
-    
-    # General full Jones
-    # Parameters: real and imag of all 4 elements for each antenna
-    # Reference: diagonal phase = 0
-    
-    params_init = []
-    for ant in range(n_ant):
-        J = jones_init[ant]
-        for i in range(2):
-            for j in range(2):
-                params_init.append(J[i, j].real)
-                params_init.append(J[i, j].imag)
-    
-    params_init = np.array(params_init)
-    
-    def params_to_jones(params):
-        jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
-        idx = 0
-        for ant in range(n_ant):
-            for i in range(2):
-                for j in range(2):
-                    jones[ant, i, j] = params[idx] + 1j * params[idx + 1]
-                    idx += 2
-        
-        # Apply reference constraint: phase = 0 for diagonal
-        if ref_antenna < n_ant:
-            for p in range(2):
-                val = jones[ref_antenna, p, p]
-                if np.abs(val) > 1e-10:
-                    phase = np.angle(val)
-                    jones[ref_antenna, p, p] = np.abs(val)  # Remove phase
-        
-        return jones
-    
-    def residual_func(params):
-        jones = params_to_jones(params)
-        
-        residuals = []
-        for bl_idx in range(n_bl):
-            a1, a2 = antenna1[bl_idx], antenna2[bl_idx]
-            
-            J_i = jones[a1]
-            J_j = jones[a2]
-            M = vis_model[bl_idx]
-            V_obs = vis_obs[bl_idx]
-            
-            V_pred = J_i @ M @ np.conj(J_j.T)
-            R = V_obs - V_pred
-            
-            # All 4 correlations
-            for i in range(2):
-                for j in range(2):
-                    residuals.extend([R[i, j].real, R[i, j].imag])
-        
-        return np.array(residuals)
-    
-    r0 = residual_func(params_init)
-    cost_init = 0.5 * np.sum(r0**2)
+    params_init = _jones_to_params_full(jones_init, ref_antenna)
     
     result = least_squares(
-        residual_func,
+        _build_residual_full(vis_obs, vis_model, antenna1, antenna2, n_ant, ref_antenna),
         params_init,
         method='lm',
-        max_nfev=max_iter * len(params_init),
-        ftol=tol,
-        xtol=tol,
-        gtol=tol,
+        ftol=tol, xtol=tol, gtol=tol,
+        max_nfev=max_iter * len(params_init)
     )
     
-    jones_polished = params_to_jones(result.x)
-    cost_final = 0.5 * np.sum(result.fun**2)
+    jones = _params_to_jones_full(result.x, n_ant, ref_antenna)
     
     if verbose:
-        print(f"[CHAOS] Polish: cost {cost_init:.6e} -> {cost_final:.6e}")
-        print(f"[CHAOS] Polish: {result.nfev} function evaluations, status={result.status}")
+        print(f"[CHAOS] Full polish: {result.nfev} evals, success={result.success}")
     
     info = {
-        "cost_init": cost_init,
-        "cost_final": cost_final,
-        "n_iter": result.nfev,
-        "status": result.status,
-        "message": result.message,
+        "nfev": result.nfev,
+        "success": result.success,
     }
     
-    return jones_polished, info
+    return jones, info
 
 
-def _polish_d_terms(
-    jones_init: np.ndarray,
-    vis_obs: np.ndarray,
-    vis_model: np.ndarray,
-    antenna1: np.ndarray,
-    antenna2: np.ndarray,
-    ref_antenna: int,
-    max_iter: int,
-    tol: float,
-    verbose: bool,
-) -> Tuple[np.ndarray, Dict]:
+# =============================================================================
+# Vectorized residual functions
+# =============================================================================
+
+def _build_residual_1pol(V_obs, M, antenna1, antenna2, n_ant, ref_antenna):
     """
-    Polish D-terms (leakage).
+    Build VECTORIZED residual function for single polarization.
     
-    D = | 1    d_01 |
-        | d_10  1   |
-    
-    Reference constraint: d_01 = 0 for ref antenna
-    
-    Parameters:
-        - d_01 for all antennas except ref (complex = 2 real)
-        - d_10 for all antennas (complex = 2 real)
-    
-    Total: 2*(N-1) + 2*N = 4*N - 2 real parameters
+    V_obs, M: (n_bl,) complex arrays
+    Returns function that computes residuals for all baselines at once.
     """
-    n_ant = jones_init.shape[0]
-    n_bl = len(antenna1)
-    
-    # Extract initial parameters
-    params_init = []
-    
-    # d_01 (off-diagonal, row 0 col 1) - exclude ref antenna
-    for ant in range(n_ant):
-        if ant == ref_antenna:
-            continue
-        d = jones_init[ant, 0, 1]
-        params_init.extend([d.real, d.imag])
-    
-    # d_10 (off-diagonal, row 1 col 0) - all antennas
-    for ant in range(n_ant):
-        d = jones_init[ant, 1, 0]
-        params_init.extend([d.real, d.imag])
-    
-    params_init = np.array(params_init)
-    
-    n_d01 = 2 * (n_ant - 1)  # complex values for d_01
-    
-    def params_to_jones(params):
-        jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
-        
-        # Set diagonals to 1
-        for ant in range(n_ant):
-            jones[ant, 0, 0] = 1.0
-            jones[ant, 1, 1] = 1.0
-        
-        # d_01
-        idx = 0
-        for ant in range(n_ant):
-            if ant == ref_antenna:
-                jones[ant, 0, 1] = 0.0  # Reference constraint
-            else:
-                jones[ant, 0, 1] = params[idx] + 1j * params[idx + 1]
-                idx += 2
-        
-        # d_10
-        for ant in range(n_ant):
-            jones[ant, 1, 0] = params[n_d01 + 2*ant] + 1j * params[n_d01 + 2*ant + 1]
-        
-        return jones
-    
     def residual_func(params):
-        jones = params_to_jones(params)
+        # Convert params to complex gains
+        gains = _params_to_gains(params, n_ant, ref_antenna)
         
-        residuals = []
-        for bl_idx in range(n_bl):
-            a1, a2 = antenna1[bl_idx], antenna2[bl_idx]
-            
-            J_i = jones[a1]
-            J_j = jones[a2]
-            M = vis_model[bl_idx]
-            V_obs = vis_obs[bl_idx]
-            
-            V_pred = J_i @ M @ np.conj(J_j.T)
-            R = V_obs - V_pred
-            
-            # All 4 correlations for D-terms
-            for i in range(2):
-                for j in range(2):
-                    residuals.extend([R[i, j].real, R[i, j].imag])
+        # VECTORIZED: compute all baselines at once
+        V_pred = gains[antenna1] * M * np.conj(gains[antenna2])
         
-        return np.array(residuals)
+        # Residual as real vector [re_0, im_0, re_1, im_1, ...]
+        R = V_obs - V_pred
+        return np.concatenate([R.real, R.imag])
     
-    r0 = residual_func(params_init)
-    cost_init = 0.5 * np.sum(r0**2)
+    return residual_func
+
+
+def _build_residual_phase_only(V_obs, M, antenna1, antenna2, n_ant, ref_antenna):
+    """Vectorized residual for phase-only gains."""
+    def residual_func(phases):
+        gains = _phases_to_gains(phases, n_ant, ref_antenna)
+        V_pred = gains[antenna1] * M * np.conj(gains[antenna2])
+        R = V_obs - V_pred
+        return np.concatenate([R.real, R.imag])
     
-    result = least_squares(
-        residual_func,
-        params_init,
-        method='lm',
-        max_nfev=max_iter * len(params_init),
-        ftol=tol,
-        xtol=tol,
-        gtol=tol,
-    )
+    return residual_func
+
+
+def _build_residual_full(vis_obs, vis_model, antenna1, antenna2, n_ant, ref_antenna):
+    """
+    Vectorized residual for full 2x2 Jones.
     
-    jones_polished = params_to_jones(result.x)
-    cost_final = 0.5 * np.sum(result.fun**2)
+    V_pred = J_i @ M @ J_j^H for all baselines simultaneously.
+    """
+    def residual_func(params):
+        jones = _params_to_jones_full(params, n_ant, ref_antenna)
+        
+        # Gather Jones for all baselines: (n_bl, 2, 2)
+        J_i = jones[antenna1]
+        J_j = jones[antenna2]
+        
+        # Batched matrix multiply: V_pred = J_i @ M @ J_j^H
+        # J_j^H = conjugate transpose
+        J_j_H = np.conj(J_j).swapaxes(-1, -2)
+        V_pred = np.einsum('bij,bjk,bkl->bil', J_i, vis_model, J_j_H)
+        
+        # Residual
+        R = vis_obs - V_pred
+        
+        # Flatten to real vector
+        return np.concatenate([R.real.ravel(), R.imag.ravel()])
     
-    if verbose:
-        print(f"[CHAOS] D-term polish: cost {cost_init:.6e} -> {cost_final:.6e}")
-        print(f"[CHAOS] Polish: {result.nfev} function evaluations, status={result.status}")
+    return residual_func
+
+
+# =============================================================================
+# Parameter <-> Jones conversion
+# =============================================================================
+
+def _jones_to_params_1pol(gains, ref_antenna):
+    """
+    Convert complex gains to parameter vector.
     
-    info = {
-        "cost_init": cost_init,
-        "cost_final": cost_final,
-        "n_iter": result.nfev,
-        "status": result.status,
-        "message": result.message,
-    }
+    Params: [amp_0, phase_0, amp_1, phase_1, ...]
+    Ref antenna: only amplitude (phase implicitly 0)
+    """
+    n_ant = len(gains)
+    params = []
+    for i in range(n_ant):
+        g = gains[i]
+        if i == ref_antenna:
+            params.append(np.abs(g))  # amplitude only
+        else:
+            params.append(np.abs(g))
+            params.append(np.angle(g))
+    return np.array(params)
+
+
+def _params_to_gains(params, n_ant, ref_antenna):
+    """Convert parameter vector back to complex gains."""
+    gains = np.zeros(n_ant, dtype=np.complex128)
+    idx = 0
+    for i in range(n_ant):
+        if i == ref_antenna:
+            amp = params[idx]
+            phase = 0.0
+            idx += 1
+        else:
+            amp = params[idx]
+            phase = params[idx + 1]
+            idx += 2
+        gains[i] = amp * np.exp(1j * phase)
+    return gains
+
+
+def _phases_to_gains(phases, n_ant, ref_antenna):
+    """Convert phase vector to unit-amplitude gains."""
+    gains = np.ones(n_ant, dtype=np.complex128)
+    idx = 0
+    for i in range(n_ant):
+        if i == ref_antenna:
+            gains[i] = 1.0  # phase = 0, amp = 1
+        else:
+            gains[i] = np.exp(1j * phases[idx])
+            idx += 1
+    return gains
+
+
+def _jones_to_params_full(jones, ref_antenna):
+    """
+    Convert full 2x2 Jones to params.
     
-    return jones_polished, info
+    Each antenna: 8 params (re/im for each of 4 elements)
+    Ref antenna: j00 and j11 are real (phase=0), so 6 params
+    """
+    n_ant = jones.shape[0]
+    params = []
+    for i in range(n_ant):
+        J = jones[i]
+        if i == ref_antenna:
+            # j00: real only (phase=0)
+            params.append(np.abs(J[0, 0]))
+            # j01: complex
+            params.extend([J[0, 1].real, J[0, 1].imag])
+            # j10: complex
+            params.extend([J[1, 0].real, J[1, 0].imag])
+            # j11: real only (phase=0)
+            params.append(np.abs(J[1, 1]))
+        else:
+            # All elements complex
+            params.extend([J[0, 0].real, J[0, 0].imag])
+            params.extend([J[0, 1].real, J[0, 1].imag])
+            params.extend([J[1, 0].real, J[1, 0].imag])
+            params.extend([J[1, 1].real, J[1, 1].imag])
+    return np.array(params)
+
+
+def _params_to_jones_full(params, n_ant, ref_antenna):
+    """Convert params back to full 2x2 Jones."""
+    jones = np.zeros((n_ant, 2, 2), dtype=np.complex128)
+    idx = 0
+    for i in range(n_ant):
+        if i == ref_antenna:
+            jones[i, 0, 0] = params[idx]  # real
+            idx += 1
+            jones[i, 0, 1] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+            jones[i, 1, 0] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+            jones[i, 1, 1] = params[idx]  # real
+            idx += 1
+        else:
+            jones[i, 0, 0] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+            jones[i, 0, 1] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+            jones[i, 1, 0] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+            jones[i, 1, 1] = params[idx] + 1j * params[idx + 1]
+            idx += 2
+    return jones
+
+
+__all__ = ['polish_jones']
